@@ -4,6 +4,7 @@ import helmet from 'helmet';
 import { errorHandler } from './middleware/errorHandler';
 import { requestLogger } from './middleware/requestLogger';
 import healthRoutes from './routes/health.routes';
+import apiRoutes from './routes/index';
 
 export function createApp(): Application {
   const app = express();
@@ -21,6 +22,9 @@ export function createApp(): Application {
 
   // Health check (no auth required)
   app.use('/health', healthRoutes);
+
+  // API routes (auth required)
+  app.use('/api/v1', apiRoutes);
 
   // Error handling (must be last)
   app.use(errorHandler);
