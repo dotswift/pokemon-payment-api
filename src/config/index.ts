@@ -30,6 +30,11 @@ export const config = {
     serviceRoleKey: getEnvVarOptional('SUPABASE_SERVICE_ROLE_KEY') ?? '',
   },
 
+  stripe: {
+    secretKey: getEnvVarOptional('STRIPE_SECRET_KEY') ?? '',
+    webhookSecret: getEnvVarOptional('STRIPE_WEBHOOK_SECRET') ?? '',
+  },
+
   security: {
     apiKey: getEnvVar('API_KEY', ''),
     webhookSecret: getEnvVarOptional('WEBHOOK_SECRET') ?? '',

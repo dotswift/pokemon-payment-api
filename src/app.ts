@@ -1,11 +1,21 @@
-import express, { Application } from 'express';
+import express, { Application, Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import { errorHandler } from './middleware/errorHandler';
 import { requestLogger } from './middleware/requestLogger';
 import healthRoutes from './routes/health.routes';
 import webhooksRoutes from './routes/webhooks.routes';
+import stripeWebhookRoutes from './routes/stripeWebhook.routes';
 import apiRoutes from './routes/index';
+
+// Extend Request type to include rawBody
+declare global {
+  namespace Express {
+    interface Request {
+      rawBody?: Buffer;
+    }
+  }
+}
 
 export function createApp(): Application {
   const app = express();
@@ -14,7 +24,14 @@ export function createApp(): Application {
   app.use(helmet());
   app.use(cors());
 
-  // Body parsing
+  // Stripe webhook needs raw body for signature verification
+  // Must be before express.json()
+  app.use('/webhooks/stripe', express.raw({ type: 'application/json' }), (req: Request, _res: Response, next: NextFunction) => {
+    req.rawBody = req.body;
+    next();
+  });
+
+  // Body parsing for all other routes
   app.use(express.json());
   app.use(express.urlencoded({ extended: true }));
 
@@ -26,6 +43,7 @@ export function createApp(): Application {
 
   // Webhooks (no API key auth - uses signature verification)
   app.use('/webhooks', webhooksRoutes);
+  app.use('/webhooks', stripeWebhookRoutes);
 
   // API routes (auth required)
   app.use('/api/v1', apiRoutes);
