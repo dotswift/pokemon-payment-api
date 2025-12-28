@@ -100,8 +100,8 @@ class SettlementService {
           },
         });
 
-        // Create settlement record
-        const { error: settlementError } = await supabase
+        // Create settlement record and get the inserted ID
+        const { data: settlement, error: settlementError } = await supabase
           .from('settlements')
           .insert({
             listing_id: auction.listing_id,
@@ -110,22 +110,24 @@ class SettlementService {
             amount: amountCents,
             stripe_payment_intent_id: paymentIntent.id,
             status: paymentIntent.status === 'succeeded' ? 'paid' : 'pending',
-          });
+          })
+          .select('id')
+          .single();
 
         if (settlementError) {
           logger.error('Settlement insert error', { error: settlementError });
         }
 
         // Update listing status
-        if (paymentIntent.status === 'succeeded') {
+        if (paymentIntent.status === 'succeeded' && settlement?.id) {
           await supabase
             .from('listings')
             .update({ status: 'sold' })
             .eq('id', auction.listing_id);
 
-          // Create escrow record
+          // Create escrow record with actual settlement ID
           await supabase.from('escrow').insert({
-            settlement_id: paymentIntent.id,
+            settlement_id: settlement.id,
             amount: amountCents,
             status: 'holding',
           });
