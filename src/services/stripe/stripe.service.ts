@@ -314,6 +314,7 @@ class StripeService {
 
   /**
    * Place a bid (secure - uses authenticated user ID)
+   * Replicates the place_bid RPC logic since auth.uid() doesn't work with service role
    */
   async placeBid(
     userId: string,
@@ -327,12 +328,44 @@ class StripeService {
       throw new Error('Supabase is not configured');
     }
 
-    // The place_bid RPC uses auth.uid() internally, but we call it with the service role
-    // So we need to use a different approach - call the RPC with impersonation or
-    // replicate the logic here. For now, let's call the RPC directly since
-    // the backend validates the user via JWT.
+    // 1. Get listing details
+    const { data: listing, error: listingError } = await supabase
+      .from('listings')
+      .select('id, status, ends_at, user_id, current_bid, high_bidder_id, min_bid_increment, starting_price, bid_count')
+      .eq('id', listingId)
+      .single();
 
-    // First verify the payment method belongs to the user
+    if (listingError || !listing) {
+      return { success: false, error: 'Listing not found' };
+    }
+
+    // 2. Check listing is active
+    if (listing.status !== 'active') {
+      return { success: false, error: 'Auction is not active' };
+    }
+
+    // 3. Check auction hasn't ended
+    if (new Date(listing.ends_at) < new Date()) {
+      return { success: false, error: 'Auction has ended' };
+    }
+
+    // 4. Check user isn't the seller
+    if (listing.user_id === userId) {
+      return { success: false, error: 'Cannot bid on your own listing' };
+    }
+
+    // 5. Calculate minimum valid bid
+    const minIncrement = listing.min_bid_increment || 100;
+    const minBid = Math.max(
+      listing.starting_price || 0,
+      (listing.current_bid || 0) + minIncrement
+    );
+
+    if (amount < minBid) {
+      return { success: false, error: `Bid too low. Minimum: ${minBid}` };
+    }
+
+    // 6. Verify payment method belongs to user
     const { data: pm, error: pmError } = await supabase
       .from('payment_methods')
       .select('id')
@@ -344,28 +377,65 @@ class StripeService {
       return { success: false, error: 'Invalid payment method' };
     }
 
-    // Call the place_bid RPC
-    // Note: Since we're using service role, auth.uid() won't work in the RPC
-    // The RPC is designed for client-side use. We need to handle this differently.
-    // For now, we'll replicate the essential bid logic here.
+    // 7. Calculate available bid power
+    const { data: totalPower } = await supabase.rpc('get_user_bid_power', { p_user_id: userId });
+    const { data: exposure } = await supabase.rpc('get_user_bid_exposure', { p_user_id: userId });
 
-    const { data, error } = await supabase.rpc('place_bid', {
-      p_listing_id: listingId,
-      p_amount: amount,
-      p_payment_method_id: paymentMethodId,
-    });
-
-    if (error) {
-      logger.error('Error placing bid', { error });
-      return { success: false, error: error.message };
+    let currentExposure = exposure || 0;
+    // If user is already high bidder, their existing bid doesn't count against them
+    if (listing.high_bidder_id === userId) {
+      currentExposure -= listing.current_bid || 0;
     }
 
-    // The RPC returns a JSON object
-    if (data && typeof data === 'object') {
-      return data as { success: boolean; bidId?: string; error?: string };
+    const availablePower = (totalPower || 0) - currentExposure;
+
+    if (amount > availablePower) {
+      return { success: false, error: `Insufficient bid power. Available: ${availablePower}` };
     }
 
-    return { success: false, error: 'Unexpected response from bid service' };
+    // 8. Mark previous winning bid as not winning
+    await supabase
+      .from('bids')
+      .update({ is_winning: false })
+      .eq('listing_id', listingId)
+      .eq('is_winning', true);
+
+    // 9. Insert new bid
+    const { data: newBid, error: bidError } = await supabase
+      .from('bids')
+      .insert({
+        listing_id: listingId,
+        user_id: userId,
+        amount,
+        payment_method_id: paymentMethodId,
+        is_winning: true,
+      })
+      .select('id')
+      .single();
+
+    if (bidError || !newBid) {
+      logger.error('Error inserting bid', { error: bidError });
+      return { success: false, error: 'Failed to place bid' };
+    }
+
+    // 10. Update listing
+    const { error: updateError } = await supabase
+      .from('listings')
+      .update({
+        current_bid: amount,
+        high_bidder_id: userId,
+        bid_count: (listing.bid_count || 0) + 1,
+      })
+      .eq('id', listingId);
+
+    if (updateError) {
+      logger.error('Error updating listing', { error: updateError });
+      // Bid was placed but listing update failed - log but don't fail
+    }
+
+    logger.info('Bid placed successfully', { userId, listingId, amount, bidId: newBid.id });
+
+    return { success: true, bidId: newBid.id };
   }
 
   /**
