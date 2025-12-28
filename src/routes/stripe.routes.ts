@@ -24,4 +24,8 @@ router.post('/payment-methods', wrap(stripeController.savePaymentMethod.bind(str
 router.delete('/payment-methods/:id', wrap(stripeController.deletePaymentMethod.bind(stripeController)));
 router.put('/payment-methods/:id/default', wrap(stripeController.setDefaultPaymentMethod.bind(stripeController)));
 
+// Bidding (secure - uses authenticated user ID only)
+router.get('/bid-power', wrap(stripeController.getBidPower.bind(stripeController)));
+router.post('/bids', wrap(stripeController.placeBid.bind(stripeController)));
+
 export default router;

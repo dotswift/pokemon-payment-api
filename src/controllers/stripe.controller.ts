@@ -117,6 +117,62 @@ export class StripeController {
   }
 
   /**
+   * Get user's bid power (secure)
+   * GET /api/v1/stripe/bid-power
+   */
+  async getBidPower(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const { id: userId } = req.user;
+
+      const result = await stripeService.getBidPower(userId);
+
+      res.status(200).json({
+        success: true,
+        data: result,
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * Place a bid (secure)
+   * POST /api/v1/stripe/bids
+   */
+  async placeBid(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const { id: userId } = req.user;
+      const { listingId, amount, paymentMethodId } = req.body;
+
+      if (!listingId) {
+        throw new BadRequestError('listingId is required');
+      }
+
+      if (!amount || typeof amount !== 'number') {
+        throw new BadRequestError('amount is required and must be a number');
+      }
+
+      if (!paymentMethodId) {
+        throw new BadRequestError('paymentMethodId is required');
+      }
+
+      const result = await stripeService.placeBid(userId, listingId, amount, paymentMethodId);
+
+      if (!result.success) {
+        res.status(400).json(result);
+        return;
+      }
+
+      res.status(200).json({
+        success: true,
+        data: result,
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
    * Handle Stripe webhook
    * POST /webhooks/stripe
    */
