@@ -11,11 +11,15 @@ import cryptoRoutes from './crypto.routes';
 import prefundsRoutes from './prefunds.routes';
 import sandboxRoutes from './sandbox.routes';
 import stripeRoutes from './stripe.routes';
+import connectRoutes from './connect.routes';
 
 const router = Router();
 
 // Stripe routes use Supabase JWT auth (not API key)
 router.use('/stripe', stripeRoutes);
+
+// Connect routes use Supabase JWT auth (seller onboarding)
+router.use('/connect', connectRoutes);
 
 // All other routes require API key authentication
 router.use(apiKeyAuth);
