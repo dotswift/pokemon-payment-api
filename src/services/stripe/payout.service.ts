@@ -3,8 +3,8 @@ import { getStripeClient } from './client';
 import { getSupabaseClient } from '../supabase';
 import { logger } from '../../utils/logger';
 
-// Platform fee percentage (10%)
-const PLATFORM_FEE_PERCENT = 10;
+// Platform fee percentage (4%)
+const PLATFORM_FEE_PERCENT = 4;
 
 export interface FeeCalculation {
   grossAmount: number;
