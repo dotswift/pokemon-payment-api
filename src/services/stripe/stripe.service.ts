@@ -517,6 +517,70 @@ class StripeService {
         break;
       }
 
+      case 'account.updated': {
+        // Seller Connect account status changed
+        const account = event.data.object as Stripe.Account;
+        logger.info('Connect account updated', {
+          accountId: account.id,
+          detailsSubmitted: account.details_submitted,
+          chargesEnabled: account.charges_enabled,
+          payoutsEnabled: account.payouts_enabled,
+        });
+
+        // Update seller_connect_accounts with new status
+        const { error } = await supabase
+          .from('seller_connect_accounts')
+          .update({
+            details_submitted: account.details_submitted,
+            charges_enabled: account.charges_enabled,
+            payouts_enabled: account.payouts_enabled,
+          })
+          .eq('stripe_account_id', account.id);
+
+        if (error) {
+          logger.error('Error updating Connect account', { error, accountId: account.id });
+        }
+        break;
+      }
+
+      case 'transfer.created': {
+        // Transfer to seller initiated
+        const transfer = event.data.object as Stripe.Transfer;
+        logger.info('Transfer created', {
+          transferId: transfer.id,
+          amount: transfer.amount,
+          destination: transfer.destination,
+        });
+        // Status already updated synchronously when creating transfer
+        break;
+      }
+
+      case 'transfer.reversed': {
+        // Transfer to seller was reversed (e.g., due to dispute)
+        const transfer = event.data.object as Stripe.Transfer;
+        logger.warn('Transfer reversed', {
+          transferId: transfer.id,
+          destination: transfer.destination,
+          reversed: transfer.reversed,
+        });
+
+        // Update payout status to failed if fully reversed
+        if (transfer.reversed) {
+          const { error } = await supabase
+            .from('seller_payouts')
+            .update({
+              status: 'failed',
+              error_message: 'Transfer reversed',
+            })
+            .eq('stripe_transfer_id', transfer.id);
+
+          if (error) {
+            logger.error('Error updating payout status', { error, transferId: transfer.id });
+          }
+        }
+        break;
+      }
+
       default:
         logger.info('Unhandled Stripe event type', { type: event.type });
     }
