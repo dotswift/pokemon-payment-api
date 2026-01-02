@@ -351,16 +351,16 @@ class PayoutService {
       .select(`
         id,
         listing_id,
-        final_amount,
+        amount,
         status,
-        charged_at,
+        created_at,
         delivery_confirmed_at,
         listings!inner(
           card_id,
           pokemon_cards(name, set_name)
         )
       `)
-      .eq('buyer_id', buyerId)
+      .eq('winner_id', buyerId)
       .order('created_at', { ascending: false });
 
     if (error) {
@@ -372,9 +372,9 @@ class PayoutService {
       listingId: s.listing_id,
       cardName: s.listings?.pokemon_cards?.name || 'Unknown',
       cardSet: s.listings?.pokemon_cards?.set_name || 'Unknown',
-      amount: s.final_amount,
+      amount: s.amount,
       status: s.status,
-      chargedAt: s.charged_at,
+      chargedAt: s.created_at,
       deliveryConfirmedAt: s.delivery_confirmed_at,
     }));
   }
