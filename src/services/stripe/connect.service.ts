@@ -191,10 +191,11 @@ class ConnectService {
     }
 
     // Create onboarding link
+    // Redirect to root with query param (app is single-page, no /seller/onboarding route)
     const accountLink = await stripe.accountLinks.create({
       account: account.stripe_account_id,
-      refresh_url: `${frontendUrl}/seller/onboarding?refresh=true`,
-      return_url: `${frontendUrl}/seller/onboarding?complete=true`,
+      refresh_url: `${frontendUrl}?seller_onboarding=refresh`,
+      return_url: `${frontendUrl}?seller_onboarding=complete`,
       type: 'account_onboarding',
     });
 
