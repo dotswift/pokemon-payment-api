@@ -169,6 +169,139 @@ class SettlementService {
       results,
     };
   }
+
+  /**
+   * Process Buy Now purchase - immediate purchase at buy_now_price
+   */
+  async processBuyNow(
+    buyerId: string,
+    listingId: string,
+    paymentMethodId: string
+  ): Promise<{ success: boolean; error?: string }> {
+    const stripe = getStripeClient();
+    const supabase = getSupabaseClient();
+
+    if (!stripe) {
+      throw new Error('Stripe is not configured');
+    }
+
+    if (!supabase) {
+      throw new Error('Supabase is not configured');
+    }
+
+    // 1. Get listing and verify it has buy_now_price and is active
+    const { data: listing, error: listingError } = await supabase
+      .from('listings')
+      .select('id, user_id, buy_now_price, status, card:pokemon_cards(name, set_name)')
+      .eq('id', listingId)
+      .single();
+
+    if (listingError || !listing) {
+      return { success: false, error: 'Listing not found' };
+    }
+
+    if (listing.status !== 'active') {
+      return { success: false, error: 'Listing is no longer active' };
+    }
+
+    if (!listing.buy_now_price) {
+      return { success: false, error: 'Listing does not have a Buy Now price' };
+    }
+
+    if (listing.user_id === buyerId) {
+      return { success: false, error: 'Cannot buy your own listing' };
+    }
+
+    const sellerId = listing.user_id;
+    const amountCents = listing.buy_now_price; // Already in cents
+    const cardName = (listing.card as { name?: string })?.name || 'Unknown Card';
+    const cardSet = (listing.card as { set_name?: string })?.set_name || '';
+
+    // 2. Get buyer's Stripe customer ID
+    const { data: stripeCustomer } = await supabase
+      .from('stripe_customers')
+      .select('stripe_customer_id')
+      .eq('user_id', buyerId)
+      .single();
+
+    if (!stripeCustomer?.stripe_customer_id) {
+      return { success: false, error: 'No payment method on file' };
+    }
+
+    try {
+      // 3. Create PaymentIntent
+      const paymentIntent = await stripe.paymentIntents.create({
+        amount: amountCents,
+        currency: 'usd',
+        customer: stripeCustomer.stripe_customer_id,
+        payment_method: paymentMethodId,
+        off_session: true,
+        confirm: true,
+        description: `Buy Now: ${cardName} (${cardSet})`,
+        metadata: {
+          listing_id: listingId,
+          winner_id: buyerId,
+          seller_id: sellerId,
+          type: 'buy_now',
+        },
+      });
+
+      // 4. Create settlement record
+      const { data: settlement, error: settlementError } = await supabase
+        .from('settlements')
+        .insert({
+          listing_id: listingId,
+          winner_id: buyerId,
+          seller_id: sellerId,
+          amount: amountCents,
+          stripe_payment_intent_id: paymentIntent.id,
+          status: paymentIntent.status === 'succeeded' ? 'paid' : 'pending',
+        })
+        .select('id')
+        .single();
+
+      if (settlementError) {
+        logger.error('Settlement insert error', { error: settlementError });
+      }
+
+      // 5. Update listing to sold
+      if (paymentIntent.status === 'succeeded') {
+        await supabase
+          .from('listings')
+          .update({ status: 'sold', ends_at: new Date().toISOString() })
+          .eq('id', listingId);
+
+        // 6. Create escrow record
+        if (settlement?.id) {
+          await supabase.from('escrow').insert({
+            settlement_id: settlement.id,
+            amount: amountCents,
+            status: 'holding',
+          });
+        }
+      }
+
+      logger.info(`Buy Now successful for listing ${listingId}`, { paymentIntentId: paymentIntent.id });
+
+      return { success: true };
+
+    } catch (err) {
+      const error = err as Error;
+      logger.error(`Buy Now failed for listing ${listingId}`, { error: error.message });
+
+      // Record failed settlement
+      await supabase.from('settlements').insert({
+        listing_id: listingId,
+        winner_id: buyerId,
+        seller_id: sellerId,
+        amount: amountCents,
+        status: 'failed',
+        error_message: error.message,
+      });
+
+      return { success: false, error: error.message };
+    }
+  }
 }
 
 export const settlementService = new SettlementService();
