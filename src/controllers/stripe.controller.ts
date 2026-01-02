@@ -235,6 +235,7 @@ export class StripeController {
       const result = await settlementService.processBuyNow(userId, listingId, paymentMethodId);
 
       if (!result.success) {
+        logger.warn('Buy Now failed', { userId, listingId, error: result.error });
         res.status(400).json(result);
         return;
       }
