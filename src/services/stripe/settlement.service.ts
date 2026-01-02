@@ -190,6 +190,7 @@ class SettlementService {
     }
 
     // 1. Get listing and verify it has buy_now_price and is active
+    logger.info('Buy Now: fetching listing', { listingId, buyerId });
     const { data: listing, error: listingError } = await supabase
       .from('listings')
       .select('id, user_id, buy_now_price, status, card:pokemon_cards(name, set_name)')
@@ -197,18 +198,24 @@ class SettlementService {
       .single();
 
     if (listingError || !listing) {
+      logger.warn('Buy Now: listing not found', { listingId, error: listingError });
       return { success: false, error: 'Listing not found' };
     }
 
+    logger.info('Buy Now: listing found', { listingId, status: listing.status, buyNowPrice: listing.buy_now_price, sellerId: listing.user_id });
+
     if (listing.status !== 'active') {
+      logger.warn('Buy Now: listing not active', { listingId, status: listing.status });
       return { success: false, error: 'Listing is no longer active' };
     }
 
     if (!listing.buy_now_price) {
+      logger.warn('Buy Now: no buy_now_price', { listingId });
       return { success: false, error: 'Listing does not have a Buy Now price' };
     }
 
     if (listing.user_id === buyerId) {
+      logger.warn('Buy Now: buyer is seller', { listingId, buyerId });
       return { success: false, error: 'Cannot buy your own listing' };
     }
 
