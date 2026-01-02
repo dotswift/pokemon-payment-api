@@ -64,8 +64,8 @@ class PayoutService {
       .select(`
         id,
         listing_id,
-        buyer_id,
-        final_amount,
+        winner_id,
+        amount,
         stripe_payment_intent_id,
         status,
         delivery_confirmed_at
@@ -78,13 +78,13 @@ class PayoutService {
     }
 
     // Verify the confirming user is the buyer
-    if (settlement.buyer_id !== confirmingUserId) {
+    if (settlement.winner_id !== confirmingUserId) {
       throw new Error('Only the buyer can confirm delivery');
     }
 
-    // Check settlement is charged (payment successful)
-    if (settlement.status !== 'charged') {
-      throw new Error('Settlement is not in charged status');
+    // Check settlement is paid (payment successful)
+    if (settlement.status !== 'paid') {
+      throw new Error('Settlement is not in paid status');
     }
 
     // Check if already confirmed
@@ -121,7 +121,7 @@ class PayoutService {
     }
 
     // Calculate fees
-    const { grossAmount, platformFee, netAmount } = this.calculateFees(settlement.final_amount);
+    const { grossAmount, platformFee, netAmount } = this.calculateFees(settlement.amount);
 
     // Get the charge ID from the PaymentIntent for source_transaction
     const paymentIntent = await stripe.paymentIntents.retrieve(settlement.stripe_payment_intent_id);
@@ -246,8 +246,8 @@ class PayoutService {
     // Get pending (in escrow, not yet confirmed delivery)
     const { data: pendingSettlements } = await supabase
       .from('settlements')
-      .select('final_amount, listing_id')
-      .eq('status', 'charged')
+      .select('amount, listing_id')
+      .eq('status', 'paid')
       .is('delivery_confirmed_at', null);
 
     // Filter to only this seller's settlements
@@ -262,7 +262,7 @@ class PayoutService {
           .single();
 
         if (listing?.user_id === sellerId) {
-          const { netAmount } = this.calculateFees(s.final_amount);
+          const { netAmount } = this.calculateFees(s.amount);
           pendingEarnings += netAmount;
           pendingCount++;
         }
