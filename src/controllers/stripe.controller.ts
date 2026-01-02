@@ -216,6 +216,39 @@ export class StripeController {
   }
 
   /**
+   * Buy Now - instant purchase at buy_now_price
+   * POST /api/v1/stripe/buy-now
+   */
+  async buyNow(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const { id: userId } = req.user;
+      const { listingId, paymentMethodId } = req.body;
+
+      if (!listingId) {
+        throw new BadRequestError('listingId is required');
+      }
+
+      if (!paymentMethodId) {
+        throw new BadRequestError('paymentMethodId is required');
+      }
+
+      const result = await settlementService.processBuyNow(userId, listingId, paymentMethodId);
+
+      if (!result.success) {
+        res.status(400).json(result);
+        return;
+      }
+
+      res.status(200).json({
+        success: true,
+        message: 'Purchase completed successfully',
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
    * Run auction settlement job
    * POST /api/v1/stripe/settle-auctions
    * This endpoint is meant to be called by a cron job or admin

@@ -28,4 +28,7 @@ router.put('/payment-methods/:id/default', wrap(stripeController.setDefaultPayme
 router.get('/bid-power', wrap(stripeController.getBidPower.bind(stripeController)));
 router.post('/bids', wrap(stripeController.placeBid.bind(stripeController)));
 
+// Buy Now (secure - uses authenticated user ID only)
+router.post('/buy-now', wrap(stripeController.buyNow.bind(stripeController)));
+
 export default router;
