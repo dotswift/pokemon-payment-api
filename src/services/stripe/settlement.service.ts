@@ -220,7 +220,7 @@ class SettlementService {
     }
 
     const sellerId = listing.user_id;
-    const amountCents = listing.buy_now_price; // Already in cents
+    const amountCents = Math.round(listing.buy_now_price * 100);
     const cardName = (listing.card as { name?: string })?.name || 'Unknown Card';
     const cardSet = (listing.card as { set_name?: string })?.set_name || '';
 
