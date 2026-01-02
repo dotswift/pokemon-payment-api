@@ -65,7 +65,7 @@ class PayoutService {
         id,
         listing_id,
         winner_id,
-        amount,
+        final_amount,
         stripe_payment_intent_id,
         status,
         delivery_confirmed_at
@@ -82,9 +82,9 @@ class PayoutService {
       throw new Error('Only the buyer can confirm delivery');
     }
 
-    // Check settlement is paid (payment successful)
-    if (settlement.status !== 'paid') {
-      throw new Error('Settlement is not in paid status');
+    // Check settlement is charged (payment successful)
+    if (settlement.status !== 'charged') {
+      throw new Error('Settlement is not in charged status');
     }
 
     // Check if already confirmed
@@ -121,7 +121,7 @@ class PayoutService {
     }
 
     // Calculate fees
-    const { grossAmount, platformFee, netAmount } = this.calculateFees(settlement.amount);
+    const { grossAmount, platformFee, netAmount } = this.calculateFees(settlement.final_amount);
 
     // Get the charge ID from the PaymentIntent for source_transaction
     const paymentIntent = await stripe.paymentIntents.retrieve(settlement.stripe_payment_intent_id);
@@ -246,8 +246,8 @@ class PayoutService {
     // Get pending (in escrow, not yet confirmed delivery)
     const { data: pendingSettlements } = await supabase
       .from('settlements')
-      .select('amount, listing_id')
-      .eq('status', 'paid')
+      .select('final_amount, listing_id')
+      .eq('status', 'charged')
       .is('delivery_confirmed_at', null);
 
     // Filter to only this seller's settlements
@@ -262,7 +262,7 @@ class PayoutService {
           .single();
 
         if (listing?.user_id === sellerId) {
-          const { netAmount } = this.calculateFees(s.amount);
+          const { netAmount } = this.calculateFees(s.final_amount);
           pendingEarnings += netAmount;
           pendingCount++;
         }
@@ -351,9 +351,9 @@ class PayoutService {
       .select(`
         id,
         listing_id,
-        amount,
+        final_amount,
         status,
-        created_at,
+        charged_at,
         delivery_confirmed_at,
         listings!inner(
           card_id,
@@ -372,9 +372,9 @@ class PayoutService {
       listingId: s.listing_id,
       cardName: s.listings?.pokemon_cards?.name || 'Unknown',
       cardSet: s.listings?.pokemon_cards?.set_name || 'Unknown',
-      amount: s.amount,
+      amount: s.final_amount,
       status: s.status,
-      chargedAt: s.created_at,
+      chargedAt: s.charged_at,
       deliveryConfirmedAt: s.delivery_confirmed_at,
     }));
   }

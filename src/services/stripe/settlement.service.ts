@@ -107,9 +107,9 @@ class SettlementService {
             listing_id: auction.listing_id,
             winner_id: auction.winner_id,
             seller_id: auction.seller_id,
-            amount: amountCents,
+            final_amount: amountCents,
             stripe_payment_intent_id: paymentIntent.id,
-            status: paymentIntent.status === 'succeeded' ? 'paid' : 'pending',
+            status: paymentIntent.status === 'succeeded' ? 'charged' : 'pending',
           })
           .select('id')
           .single();
@@ -150,9 +150,8 @@ class SettlementService {
           listing_id: auction.listing_id,
           winner_id: auction.winner_id,
           seller_id: auction.seller_id,
-          amount: Math.round(auction.final_amount * 100),
+          final_amount: Math.round(auction.final_amount * 100),
           status: 'failed',
-          error_message: error.message,
         });
 
         results.push({
@@ -260,9 +259,9 @@ class SettlementService {
           listing_id: listingId,
           winner_id: buyerId,
           seller_id: sellerId,
-          amount: amountCents,
+          final_amount: amountCents,
           stripe_payment_intent_id: paymentIntent.id,
-          status: paymentIntent.status === 'succeeded' ? 'paid' : 'pending',
+          status: paymentIntent.status === 'succeeded' ? 'charged' : 'pending',
         })
         .select('id')
         .single();
@@ -301,9 +300,8 @@ class SettlementService {
         listing_id: listingId,
         winner_id: buyerId,
         seller_id: sellerId,
-        amount: amountCents,
+        final_amount: amountCents,
         status: 'failed',
-        error_message: error.message,
       });
 
       return { success: false, error: error.message };
