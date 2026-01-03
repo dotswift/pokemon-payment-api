@@ -14,4 +14,7 @@ router.use(supabaseAuth);
 // Delivery confirmation
 router.post('/:id/confirm-delivery', wrap(settlementController.confirmDelivery.bind(settlementController)));
 
+// Get live tracking details
+router.get('/:id/tracking', wrap(settlementController.getTrackingDetails.bind(settlementController)));
+
 export default router;
