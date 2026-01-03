@@ -19,4 +19,7 @@ router.get('/payouts', wrap(sellerController.getPayouts.bind(sellerController)))
 router.get('/sales', wrap(sellerController.getSales.bind(sellerController)));
 router.post('/sales/:settlementId/tracking', wrap(sellerController.addTracking.bind(sellerController)));
 
+// Listing details (for seller's own listings)
+router.get('/listings/:listingId', wrap(sellerController.getListingDetails.bind(sellerController)));
+
 export default router;
