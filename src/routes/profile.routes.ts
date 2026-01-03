@@ -1,5 +1,5 @@
 import { Router, Request, Response, NextFunction } from 'express';
-import { sellerController } from '../controllers/seller.controller';
+import { profileController } from '../controllers/profile.controller';
 import { supabaseAuth, AuthenticatedRequest } from '../middleware/supabaseAuth';
 
 const router = Router();
@@ -11,12 +11,9 @@ const wrap = (fn: (req: AuthenticatedRequest, res: Response, next: NextFunction)
 // All routes require Supabase JWT auth
 router.use(supabaseAuth);
 
-// Seller earnings and payouts
-router.get('/earnings', wrap(sellerController.getEarnings.bind(sellerController)));
-router.get('/payouts', wrap(sellerController.getPayouts.bind(sellerController)));
-
-// Seller sales and shipping
-router.get('/sales', wrap(sellerController.getSales.bind(sellerController)));
-router.post('/sales/:settlementId/tracking', wrap(sellerController.addTracking.bind(sellerController)));
+// Shipping address endpoints
+router.get('/shipping-address', wrap(profileController.getShippingAddress.bind(profileController)));
+router.put('/shipping-address', wrap(profileController.saveShippingAddress.bind(profileController)));
+router.get('/has-shipping-address', wrap(profileController.hasShippingAddress.bind(profileController)));
 
 export default router;

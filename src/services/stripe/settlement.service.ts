@@ -2,6 +2,7 @@ import Stripe from 'stripe';
 import { getStripeClient } from './client';
 import { getSupabaseClient } from '../supabase';
 import { logger } from '../../utils/logger';
+import { profileService } from '../profile.service';
 
 export interface SettlementResult {
   listingId: string;
@@ -98,6 +99,9 @@ class SettlementService {
         // Create PaymentIntent to charge winner
         const amountCents = Math.round(auction.final_amount * 100);
 
+        // Get winner's shipping address
+        const shippingAddress = await profileService.getShippingAddress(auction.winner_id);
+
         const paymentIntent = await stripe.paymentIntents.create({
           amount: amountCents,
           currency: 'usd',
@@ -113,7 +117,7 @@ class SettlementService {
           },
         });
 
-        // Create settlement record and get the inserted ID
+        // Create settlement record with shipping address
         const { data: settlement, error: settlementError } = await supabase
           .from('settlements')
           .insert({
@@ -123,6 +127,7 @@ class SettlementService {
             final_amount: amountCents,
             stripe_payment_intent_id: paymentIntent.id,
             status: paymentIntent.status === 'succeeded' ? 'charged' : 'pending',
+            shipping_address: shippingAddress,
           })
           .select('id')
           .single();
@@ -248,6 +253,9 @@ class SettlementService {
     }
 
     try {
+      // Get buyer's shipping address
+      const shippingAddress = await profileService.getShippingAddress(buyerId);
+
       // 3. Create PaymentIntent
       const paymentIntent = await stripe.paymentIntents.create({
         amount: amountCents,
@@ -265,7 +273,7 @@ class SettlementService {
         },
       });
 
-      // 4. Create settlement record
+      // 4. Create settlement record with shipping address
       const { data: settlement, error: settlementError } = await supabase
         .from('settlements')
         .insert({
@@ -275,6 +283,7 @@ class SettlementService {
           final_amount: amountCents,
           stripe_payment_intent_id: paymentIntent.id,
           status: paymentIntent.status === 'succeeded' ? 'charged' : 'pending',
+          shipping_address: shippingAddress,
         })
         .select('id')
         .single();

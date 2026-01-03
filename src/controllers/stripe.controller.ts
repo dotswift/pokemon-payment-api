@@ -4,6 +4,7 @@ import { stripeConfig } from '../config/stripe';
 import { AuthenticatedRequest } from '../middleware/supabaseAuth';
 import { BadRequestError, UnauthorizedError } from '../utils/errors';
 import { logger } from '../utils/logger';
+import { profileService } from '../services/profile.service';
 
 export class StripeController {
   /**
@@ -156,6 +157,18 @@ export class StripeController {
         throw new BadRequestError('paymentMethodId is required');
       }
 
+      // Check if user has a shipping address
+      const hasAddress = await profileService.hasShippingAddress(userId);
+      if (!hasAddress) {
+        res.status(400).json({
+          success: false,
+          error: 'Shipping address required',
+          code: 'SHIPPING_ADDRESS_REQUIRED',
+          message: 'Please add a shipping address before placing a bid',
+        });
+        return;
+      }
+
       const result = await stripeService.placeBid(userId, listingId, amount, paymentMethodId);
 
       if (!result.success) {
@@ -230,6 +243,18 @@ export class StripeController {
 
       if (!paymentMethodId) {
         throw new BadRequestError('paymentMethodId is required');
+      }
+
+      // Check if user has a shipping address
+      const hasAddress = await profileService.hasShippingAddress(userId);
+      if (!hasAddress) {
+        res.status(400).json({
+          success: false,
+          error: 'Shipping address required',
+          code: 'SHIPPING_ADDRESS_REQUIRED',
+          message: 'Please add a shipping address before purchasing',
+        });
+        return;
       }
 
       const result = await settlementService.processBuyNow(userId, listingId, paymentMethodId);
