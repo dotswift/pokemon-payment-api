@@ -15,6 +15,8 @@ import connectRoutes from './connect.routes';
 import sellerRoutes from './seller.routes';
 import settlementRoutes from './settlement.routes';
 import purchasesRoutes from './purchases.routes';
+import profileRoutes from './profile.routes';
+import cronRoutes from './cron.routes';
 
 const router = Router();
 
@@ -32,6 +34,12 @@ router.use('/settlements', settlementRoutes);
 
 // Purchases routes use Supabase JWT auth (buyer's won auctions)
 router.use('/purchases', purchasesRoutes);
+
+// Profile routes use Supabase JWT auth (shipping address)
+router.use('/profile', profileRoutes);
+
+// Cron routes use their own API key auth
+router.use('/cron', cronRoutes);
 
 // All other routes require API key authentication
 router.use(apiKeyAuth);

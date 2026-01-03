@@ -2,6 +2,7 @@ import Stripe from 'stripe';
 import { getStripeClient } from './client';
 import { getSupabaseClient } from '../supabase';
 import { logger } from '../../utils/logger';
+import { ship24Service } from '../ship24.service';
 
 // Platform fee percentage (4%)
 const PLATFORM_FEE_PERCENT = 4;
@@ -346,6 +347,10 @@ class PayoutService {
     paymentMethodLast4: string | null;
     paymentMethodBrand: string | null;
     stripePaymentIntentId: string | null;
+    trackingNumber: string | null;
+    trackingCarrier: string | null;
+    shippedAt: string | null;
+    deliveredAt: string | null;
   }>> {
     const supabase = getSupabaseClient();
 
@@ -363,6 +368,10 @@ class PayoutService {
         charged_at,
         delivery_confirmed_at,
         stripe_payment_intent_id,
+        tracking_number,
+        tracking_carrier,
+        shipped_at,
+        delivered_at,
         listings!inner(
           card_id,
           user_id,
@@ -435,6 +444,10 @@ class PayoutService {
         paymentMethodLast4: paymentMethod?.card_last4 || null,
         paymentMethodBrand: paymentMethod?.card_brand || null,
         stripePaymentIntentId: s.stripe_payment_intent_id || null,
+        trackingNumber: s.tracking_number || null,
+        trackingCarrier: s.tracking_carrier || null,
+        shippedAt: s.shipped_at || null,
+        deliveredAt: s.delivered_at || null,
       };
     }));
 
@@ -474,6 +487,264 @@ class PayoutService {
     }
 
     logger.info('Updated payout status', { stripeTransferId, status });
+  }
+
+  /**
+   * Get seller's sold items with buyer info and shipping address
+   */
+  async getSellerSales(sellerId: string): Promise<Array<{
+    settlementId: string;
+    listingId: string;
+    cardName: string;
+    cardSet: string;
+    imageUrl: string;
+    amount: number;
+    soldAt: string;
+    buyerDisplayName: string;
+    buyerUsername: string;
+    shippingAddress: {
+      street: string;
+      city: string;
+      state: string;
+      zip: string;
+      country: string;
+      phone?: string;
+    } | null;
+    trackingNumber: string | null;
+    trackingCarrier: string | null;
+    shippedAt: string | null;
+    deliveredAt: string | null;
+    deliveryConfirmedAt: string | null;
+    status: 'awaiting_shipment' | 'shipped' | 'delivered' | 'completed';
+  }>> {
+    const supabase = getSupabaseClient();
+
+    if (!supabase) {
+      throw new Error('Supabase is not configured');
+    }
+
+    // Get settlements where this user is the seller
+    const { data, error } = await supabase
+      .from('settlements')
+      .select(`
+        id,
+        listing_id,
+        winner_id,
+        final_amount,
+        status,
+        charged_at,
+        shipping_address,
+        tracking_number,
+        tracking_carrier,
+        shipped_at,
+        delivered_at,
+        delivery_confirmed_at,
+        listings!inner(
+          card_id,
+          pokemon_cards(name, set_name, image_small)
+        )
+      `)
+      .eq('seller_id', sellerId)
+      .in('status', ['charged', 'completed'])
+      .order('charged_at', { ascending: false });
+
+    if (error) {
+      logger.error('Error getting seller sales', { error, sellerId });
+      throw error;
+    }
+
+    // Get buyer profiles for each sale
+    const salesWithBuyerInfo = await Promise.all((data || []).map(async (s: any) => {
+      let buyerProfile: { display_name?: string; username?: string } | null = null;
+
+      if (s.winner_id) {
+        try {
+          const { data: profileData } = await supabase
+            .from('profiles')
+            .select('display_name, username')
+            .eq('id', s.winner_id)
+            .maybeSingle();
+          buyerProfile = profileData;
+        } catch {
+          // Buyer profile not found
+        }
+      }
+
+      // Determine status
+      let saleStatus: 'awaiting_shipment' | 'shipped' | 'delivered' | 'completed' = 'awaiting_shipment';
+      if (s.delivery_confirmed_at) {
+        saleStatus = 'completed';
+      } else if (s.delivered_at) {
+        saleStatus = 'delivered';
+      } else if (s.shipped_at) {
+        saleStatus = 'shipped';
+      }
+
+      return {
+        settlementId: s.id,
+        listingId: s.listing_id,
+        cardName: s.listings?.pokemon_cards?.name || 'Unknown',
+        cardSet: s.listings?.pokemon_cards?.set_name || 'Unknown',
+        imageUrl: s.listings?.pokemon_cards?.image_small || '',
+        amount: s.final_amount,
+        soldAt: s.charged_at,
+        buyerDisplayName: buyerProfile?.display_name || 'Unknown Buyer',
+        buyerUsername: buyerProfile?.username || '',
+        shippingAddress: s.shipping_address || null,
+        trackingNumber: s.tracking_number || null,
+        trackingCarrier: s.tracking_carrier || null,
+        shippedAt: s.shipped_at || null,
+        deliveredAt: s.delivered_at || null,
+        deliveryConfirmedAt: s.delivery_confirmed_at || null,
+        status: saleStatus,
+      };
+    }));
+
+    return salesWithBuyerInfo;
+  }
+
+  /**
+   * Add tracking number to a sale
+   */
+  async addTracking(
+    sellerId: string,
+    settlementId: string,
+    trackingNumber: string,
+    carrier: string
+  ): Promise<void> {
+    const supabase = getSupabaseClient();
+
+    if (!supabase) {
+      throw new Error('Supabase is not configured');
+    }
+
+    // Verify seller owns this settlement
+    const { data: settlement, error: fetchError } = await supabase
+      .from('settlements')
+      .select('id, seller_id, shipped_at')
+      .eq('id', settlementId)
+      .single();
+
+    if (fetchError || !settlement) {
+      throw new Error('Settlement not found');
+    }
+
+    if (settlement.seller_id !== sellerId) {
+      throw new Error('Not authorized to update this sale');
+    }
+
+    if (settlement.shipped_at) {
+      throw new Error('Tracking already added for this sale');
+    }
+
+    // Create Ship24 tracker if configured
+    let ship24TrackerId: string | null = null;
+    if (ship24Service.isConfigured()) {
+      try {
+        const tracker = await ship24Service.createTracker(trackingNumber);
+        ship24TrackerId = tracker.trackerId;
+        logger.info('Ship24 tracker created', { settlementId, trackerId: ship24TrackerId });
+      } catch (error) {
+        // Log but don't fail - we still want to save tracking number even if Ship24 fails
+        logger.error('Failed to create Ship24 tracker', { error, settlementId, trackingNumber });
+      }
+    }
+
+    // Update settlement with tracking info
+    const { error: updateError } = await supabase
+      .from('settlements')
+      .update({
+        tracking_number: trackingNumber,
+        tracking_carrier: carrier.toLowerCase(),
+        shipped_at: new Date().toISOString(),
+        ship24_tracker_id: ship24TrackerId,
+      })
+      .eq('id', settlementId);
+
+    if (updateError) {
+      logger.error('Error adding tracking', { error: updateError, settlementId });
+      throw updateError;
+    }
+
+    logger.info('Tracking added to sale', { settlementId, trackingNumber, carrier, ship24TrackerId });
+  }
+
+  /**
+   * Process automatic escrow releases for delivered packages
+   * Called periodically by cron job
+   * Releases escrow for settlements where:
+   * - delivered_at is set
+   * - auto_release_at <= now
+   * - delivery_confirmed_at is null
+   */
+  async processAutoReleases(): Promise<{ processed: number; errors: number }> {
+    const supabase = getSupabaseClient();
+
+    if (!supabase) {
+      logger.error('Supabase not configured for auto-release');
+      return { processed: 0, errors: 0 };
+    }
+
+    logger.info('Starting auto-release escrow job');
+
+    // Find settlements ready for auto-release
+    const now = new Date().toISOString();
+    const { data: settlements, error: fetchError } = await supabase
+      .from('settlements')
+      .select('id, buyer_id, seller_id, amount')
+      .not('delivered_at', 'is', null)
+      .lte('auto_release_at', now)
+      .is('delivery_confirmed_at', null);
+
+    if (fetchError) {
+      logger.error('Error fetching settlements for auto-release', { error: fetchError });
+      return { processed: 0, errors: 0 };
+    }
+
+    if (!settlements || settlements.length === 0) {
+      logger.info('No settlements ready for auto-release');
+      return { processed: 0, errors: 0 };
+    }
+
+    logger.info(`Found ${settlements.length} settlements ready for auto-release`);
+
+    let processed = 0;
+    let errors = 0;
+
+    for (const settlement of settlements) {
+      try {
+        // Use the existing releaseEscrowToSeller method
+        // Pass a "system" user ID to indicate this is an auto-release
+        await this.releaseEscrowToSeller(settlement.id, settlement.buyer_id);
+
+        // Mark as auto-confirmed
+        const { error: updateError } = await supabase
+          .from('settlements')
+          .update({
+            delivery_confirmed_at: new Date().toISOString(),
+          })
+          .eq('id', settlement.id);
+
+        if (updateError) {
+          logger.error('Error marking settlement as auto-confirmed', {
+            settlementId: settlement.id,
+            error: updateError,
+          });
+        }
+
+        logger.info('Auto-released escrow for settlement', { settlementId: settlement.id });
+        processed++;
+      } catch (error) {
+        logger.error('Error auto-releasing escrow', {
+          settlementId: settlement.id,
+          error,
+        });
+        errors++;
+      }
+    }
+
+    logger.info('Auto-release job completed', { processed, errors });
+    return { processed, errors };
   }
 }
 

@@ -43,6 +43,74 @@ class SellerController {
       next(error);
     }
   }
+
+  /**
+   * GET /api/v1/seller/sales
+   * Get the seller's sold items with buyer info
+   */
+  async getSales(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const userId = req.user!.id;
+
+      const sales = await payoutService.getSellerSales(userId);
+
+      res.json({
+        success: true,
+        data: sales,
+      });
+    } catch (error) {
+      logger.error('Error getting seller sales', { error });
+      next(error);
+    }
+  }
+
+  /**
+   * POST /api/v1/seller/sales/:settlementId/tracking
+   * Add tracking number to a sale
+   */
+  async addTracking(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const userId = req.user!.id;
+      const { settlementId } = req.params;
+      const { trackingNumber, carrier } = req.body;
+
+      if (!settlementId) {
+        res.status(400).json({
+          success: false,
+          error: 'settlementId is required',
+        });
+        return;
+      }
+
+      if (!trackingNumber || !carrier) {
+        res.status(400).json({
+          success: false,
+          error: 'trackingNumber and carrier are required',
+        });
+        return;
+      }
+
+      // Validate carrier
+      const validCarriers = ['usps', 'fedex', 'ups', 'dhl'];
+      if (!validCarriers.includes(carrier.toLowerCase())) {
+        res.status(400).json({
+          success: false,
+          error: `Invalid carrier. Must be one of: ${validCarriers.join(', ')}`,
+        });
+        return;
+      }
+
+      await payoutService.addTracking(userId, settlementId, trackingNumber, carrier);
+
+      res.json({
+        success: true,
+        message: 'Tracking added successfully',
+      });
+    } catch (error) {
+      logger.error('Error adding tracking', { error });
+      next(error);
+    }
+  }
 }
 
 export const sellerController = new SellerController();

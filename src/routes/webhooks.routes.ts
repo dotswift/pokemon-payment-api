@@ -6,4 +6,7 @@ const router = Router();
 // No API key auth - webhooks use signature verification
 router.post('/transfi', webhooksController.handleTransfiWebhook);
 
+// Ship24 tracking webhooks
+router.post('/ship24', webhooksController.handleShip24Webhook);
+
 export default router;
