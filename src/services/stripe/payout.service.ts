@@ -379,26 +379,45 @@ class PayoutService {
     // Get seller info and payment method for each settlement
     const settlementsWithDetails = await Promise.all((data || []).map(async (s: any) => {
       const sellerId = s.listings?.user_id;
+      let sellerProfile: { display_name?: string; username?: string; avatar_url?: string } | null = null;
+      let paymentMethod: { card_brand?: string; card_last4?: string } | null = null;
 
       // Get seller profile
-      const { data: sellerProfile } = sellerId ? await supabase
-        .from('profiles')
-        .select('display_name, username, avatar_url')
-        .eq('id', sellerId)
-        .single() : { data: null };
+      if (sellerId) {
+        try {
+          const { data: profileData } = await supabase
+            .from('profiles')
+            .select('display_name, username, avatar_url')
+            .eq('id', sellerId)
+            .maybeSingle();
+          sellerProfile = profileData;
+        } catch {
+          // Seller profile not found, use defaults
+        }
+      }
 
-      // Get the winning bid's payment method
-      const { data: bidData } = await supabase
-        .from('bids')
-        .select('payment_methods(card_brand, card_last4)')
-        .eq('listing_id', s.listing_id)
-        .eq('user_id', buyerId)
-        .order('amount', { ascending: false })
-        .limit(1)
-        .single();
+      // Get the winning bid's payment method (may not exist for Buy Now purchases)
+      try {
+        const { data: bidData } = await supabase
+          .from('bids')
+          .select('payment_method_id')
+          .eq('listing_id', s.listing_id)
+          .eq('user_id', buyerId)
+          .order('amount', { ascending: false })
+          .limit(1)
+          .maybeSingle();
 
-      // payment_methods is returned as an object from the join
-      const paymentMethod = bidData?.payment_methods as { card_brand?: string; card_last4?: string } | null;
+        if (bidData?.payment_method_id) {
+          const { data: pmData } = await supabase
+            .from('payment_methods')
+            .select('card_brand, card_last4')
+            .eq('id', bidData.payment_method_id)
+            .maybeSingle();
+          paymentMethod = pmData;
+        }
+      } catch {
+        // No bid found (Buy Now purchase), payment method will be null
+      }
 
       return {
         settlementId: s.id,
