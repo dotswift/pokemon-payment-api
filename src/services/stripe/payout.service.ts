@@ -340,6 +340,12 @@ class PayoutService {
     status: string;
     chargedAt: string | null;
     deliveryConfirmedAt: string | null;
+    sellerDisplayName: string;
+    sellerUsername: string;
+    sellerAvatarUrl: string | null;
+    paymentMethodLast4: string | null;
+    paymentMethodBrand: string | null;
+    stripePaymentIntentId: string | null;
   }>> {
     const supabase = getSupabaseClient();
 
@@ -356,9 +362,12 @@ class PayoutService {
         status,
         charged_at,
         delivery_confirmed_at,
+        stripe_payment_intent_id,
         listings!inner(
           card_id,
-          pokemon_cards(name, set_name, image_small)
+          user_id,
+          pokemon_cards(name, set_name, image_small),
+          profiles:user_id(display_name, username, avatar_url)
         )
       `)
       .eq('winner_id', buyerId)
@@ -368,17 +377,41 @@ class PayoutService {
       throw error;
     }
 
-    return (data || []).map((s: any) => ({
-      settlementId: s.id,
-      listingId: s.listing_id,
-      cardName: s.listings?.pokemon_cards?.name || 'Unknown',
-      cardSet: s.listings?.pokemon_cards?.set_name || 'Unknown',
-      imageUrl: s.listings?.pokemon_cards?.image_small || '',
-      amount: s.final_amount,
-      status: s.status,
-      chargedAt: s.charged_at,
-      deliveryConfirmedAt: s.delivery_confirmed_at,
+    // Get payment method info for each settlement from bids
+    const settlementsWithPayment = await Promise.all((data || []).map(async (s: any) => {
+      // Get the winning bid's payment method
+      const { data: bidData } = await supabase
+        .from('bids')
+        .select('payment_methods(card_brand, card_last4)')
+        .eq('listing_id', s.listing_id)
+        .eq('user_id', buyerId)
+        .order('amount', { ascending: false })
+        .limit(1)
+        .single();
+
+      // payment_methods is returned as an object from the join
+      const paymentMethod = bidData?.payment_methods as { card_brand?: string; card_last4?: string } | null;
+
+      return {
+        settlementId: s.id,
+        listingId: s.listing_id,
+        cardName: s.listings?.pokemon_cards?.name || 'Unknown',
+        cardSet: s.listings?.pokemon_cards?.set_name || 'Unknown',
+        imageUrl: s.listings?.pokemon_cards?.image_small || '',
+        amount: s.final_amount,
+        status: s.status,
+        chargedAt: s.charged_at,
+        deliveryConfirmedAt: s.delivery_confirmed_at,
+        sellerDisplayName: s.listings?.profiles?.display_name || 'Unknown Seller',
+        sellerUsername: s.listings?.profiles?.username || '',
+        sellerAvatarUrl: s.listings?.profiles?.avatar_url || null,
+        paymentMethodLast4: paymentMethod?.card_last4 || null,
+        paymentMethodBrand: paymentMethod?.card_brand || null,
+        stripePaymentIntentId: s.stripe_payment_intent_id || null,
+      };
     }));
+
+    return settlementsWithPayment;
   }
 
   /**
