@@ -366,8 +366,7 @@ class PayoutService {
         listings!inner(
           card_id,
           user_id,
-          pokemon_cards(name, set_name, image_small),
-          profiles:user_id(display_name, username, avatar_url)
+          pokemon_cards(name, set_name, image_small)
         )
       `)
       .eq('winner_id', buyerId)
@@ -377,8 +376,17 @@ class PayoutService {
       throw error;
     }
 
-    // Get payment method info for each settlement from bids
-    const settlementsWithPayment = await Promise.all((data || []).map(async (s: any) => {
+    // Get seller info and payment method for each settlement
+    const settlementsWithDetails = await Promise.all((data || []).map(async (s: any) => {
+      const sellerId = s.listings?.user_id;
+
+      // Get seller profile
+      const { data: sellerProfile } = sellerId ? await supabase
+        .from('profiles')
+        .select('display_name, username, avatar_url')
+        .eq('id', sellerId)
+        .single() : { data: null };
+
       // Get the winning bid's payment method
       const { data: bidData } = await supabase
         .from('bids')
@@ -402,16 +410,16 @@ class PayoutService {
         status: s.status,
         chargedAt: s.charged_at,
         deliveryConfirmedAt: s.delivery_confirmed_at,
-        sellerDisplayName: s.listings?.profiles?.display_name || 'Unknown Seller',
-        sellerUsername: s.listings?.profiles?.username || '',
-        sellerAvatarUrl: s.listings?.profiles?.avatar_url || null,
+        sellerDisplayName: sellerProfile?.display_name || 'Unknown Seller',
+        sellerUsername: sellerProfile?.username || '',
+        sellerAvatarUrl: sellerProfile?.avatar_url || null,
         paymentMethodLast4: paymentMethod?.card_last4 || null,
         paymentMethodBrand: paymentMethod?.card_brand || null,
         stripePaymentIntentId: s.stripe_payment_intent_id || null,
       };
     }));
 
-    return settlementsWithPayment;
+    return settlementsWithDetails;
   }
 
   /**
