@@ -335,6 +335,7 @@ class PayoutService {
     listingId: string;
     cardName: string;
     cardSet: string;
+    imageUrl: string;
     amount: number;
     status: string;
     chargedAt: string | null;
@@ -357,7 +358,7 @@ class PayoutService {
         delivery_confirmed_at,
         listings!inner(
           card_id,
-          pokemon_cards(name, set_name)
+          pokemon_cards(name, set_name, image_small)
         )
       `)
       .eq('winner_id', buyerId)
@@ -372,6 +373,7 @@ class PayoutService {
       listingId: s.listing_id,
       cardName: s.listings?.pokemon_cards?.name || 'Unknown',
       cardSet: s.listings?.pokemon_cards?.set_name || 'Unknown',
+      imageUrl: s.listings?.pokemon_cards?.image_small || '',
       amount: s.final_amount,
       status: s.status,
       chargedAt: s.charged_at,

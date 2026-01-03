@@ -242,7 +242,7 @@ export class StripeController {
 
       res.status(200).json({
         success: true,
-        message: 'Purchase completed successfully',
+        data: result.data,
       });
     } catch (error) {
       next(error);
