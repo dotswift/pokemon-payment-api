@@ -16,6 +16,19 @@ export interface SettlementSummary {
   results: SettlementResult[];
 }
 
+export interface BuyNowResult {
+  success: boolean;
+  error?: string;
+  data?: {
+    settlementId: string;
+    cardName: string;
+    cardSet: string;
+    amount: number;
+    paymentIntentId: string;
+    purchasedAt: string;
+  };
+}
+
 interface AuctionToSettle {
   listing_id: string;
   winner_id: string;
@@ -176,7 +189,7 @@ class SettlementService {
     buyerId: string,
     listingId: string,
     paymentMethodId: string
-  ): Promise<{ success: boolean; error?: string }> {
+  ): Promise<BuyNowResult> {
     const stripe = getStripeClient();
     const supabase = getSupabaseClient();
 
@@ -289,7 +302,17 @@ class SettlementService {
 
       logger.info(`Buy Now successful for listing ${listingId}`, { paymentIntentId: paymentIntent.id });
 
-      return { success: true };
+      return {
+        success: true,
+        data: {
+          settlementId: settlement?.id || '',
+          cardName,
+          cardSet,
+          amount: amountCents,
+          paymentIntentId: paymentIntent.id,
+          purchasedAt: new Date().toISOString(),
+        },
+      };
 
     } catch (err) {
       const error = err as Error;
