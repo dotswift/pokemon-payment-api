@@ -344,6 +344,9 @@ class PayoutService {
     sellerDisplayName: string;
     sellerUsername: string;
     sellerAvatarUrl: string | null;
+    sellerMemberSince: string | null;
+    sellerLocation: string | null;
+    sellerTotalSales: number;
     paymentMethodLast4: string | null;
     paymentMethodBrand: string | null;
     stripePaymentIntentId: string | null;
@@ -388,18 +391,33 @@ class PayoutService {
     // Get seller info and payment method for each settlement
     const settlementsWithDetails = await Promise.all((data || []).map(async (s: any) => {
       const sellerId = s.listings?.user_id;
-      let sellerProfile: { display_name?: string; username?: string; avatar_url?: string } | null = null;
+      let sellerProfile: {
+        display_name?: string;
+        username?: string;
+        avatar_url?: string;
+        created_at?: string;
+        shipping_address?: { city?: string; state?: string } | null;
+      } | null = null;
       let paymentMethod: { card_brand?: string; card_last4?: string } | null = null;
+      let sellerTotalSales = 0;
 
       // Get seller profile
       if (sellerId) {
         try {
           const { data: profileData } = await supabase
             .from('profiles')
-            .select('display_name, username, avatar_url')
+            .select('display_name, username, avatar_url, created_at, shipping_address')
             .eq('id', sellerId)
             .maybeSingle();
           sellerProfile = profileData;
+
+          // Get seller's total completed sales count
+          const { count } = await supabase
+            .from('settlements')
+            .select('id', { count: 'exact', head: true })
+            .eq('seller_id', sellerId)
+            .eq('status', 'completed');
+          sellerTotalSales = count || 0;
         } catch {
           // Seller profile not found, use defaults
         }
@@ -428,6 +446,19 @@ class PayoutService {
         // No bid found (Buy Now purchase), payment method will be null
       }
 
+      // Build location string from shipping address
+      let sellerLocation: string | null = null;
+      if (sellerProfile?.shipping_address) {
+        const { city, state } = sellerProfile.shipping_address;
+        if (city && state) {
+          sellerLocation = `${city}, ${state}`;
+        } else if (city) {
+          sellerLocation = city;
+        } else if (state) {
+          sellerLocation = state;
+        }
+      }
+
       return {
         settlementId: s.id,
         listingId: s.listing_id,
@@ -441,6 +472,9 @@ class PayoutService {
         sellerDisplayName: sellerProfile?.display_name || 'Unknown Seller',
         sellerUsername: sellerProfile?.username || '',
         sellerAvatarUrl: sellerProfile?.avatar_url || null,
+        sellerMemberSince: sellerProfile?.created_at || null,
+        sellerLocation,
+        sellerTotalSales,
         paymentMethodLast4: paymentMethod?.card_last4 || null,
         paymentMethodBrand: paymentMethod?.card_brand || null,
         stripePaymentIntentId: s.stripe_payment_intent_id || null,
