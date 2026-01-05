@@ -206,7 +206,7 @@ class StripeService {
   /**
    * Delete a payment method
    */
-  async deletePaymentMethod(userId: string, paymentMethodId: string): Promise<void> {
+  async deletePaymentMethod(userId: string, stripePaymentMethodId: string): Promise<void> {
     const stripe = getStripeClient();
     const supabase = getSupabaseClient();
 
@@ -218,11 +218,11 @@ class StripeService {
       throw new Error('Supabase is not configured');
     }
 
-    // Get the payment method from database
+    // Verify the payment method belongs to this user
     const { data: pm, error: fetchError } = await supabase
       .from('payment_methods')
-      .select('stripe_payment_method_id')
-      .eq('id', paymentMethodId)
+      .select('id')
+      .eq('stripe_payment_method_id', stripePaymentMethodId)
       .eq('user_id', userId)
       .single();
 
@@ -231,20 +231,20 @@ class StripeService {
     }
 
     // Detach from Stripe
-    await stripe.paymentMethods.detach(pm.stripe_payment_method_id);
+    await stripe.paymentMethods.detach(stripePaymentMethodId);
 
     // Delete from database
     const { error: deleteError } = await supabase
       .from('payment_methods')
       .delete()
-      .eq('id', paymentMethodId)
+      .eq('stripe_payment_method_id', stripePaymentMethodId)
       .eq('user_id', userId);
 
     if (deleteError) {
       throw deleteError;
     }
 
-    logger.info('Deleted payment method', { userId, paymentMethodId });
+    logger.info('Deleted payment method', { userId, stripePaymentMethodId });
   }
 
   /**
