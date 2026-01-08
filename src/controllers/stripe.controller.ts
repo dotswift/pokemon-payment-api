@@ -229,20 +229,25 @@ export class StripeController {
   }
 
   /**
-   * Buy Now - instant purchase at buy_now_price
+   * Buy Now - creates checkout session for instant purchase at buy_now_price
+   * Supports card and crypto (USDC) payments
    * POST /api/v1/stripe/buy-now
    */
   async buyNow(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
     try {
       const { id: userId } = req.user;
-      const { listingId, paymentMethodId } = req.body;
+      const { listingId, successUrl, cancelUrl } = req.body;
 
       if (!listingId) {
         throw new BadRequestError('listingId is required');
       }
 
-      if (!paymentMethodId) {
-        throw new BadRequestError('paymentMethodId is required');
+      if (!successUrl) {
+        throw new BadRequestError('successUrl is required');
+      }
+
+      if (!cancelUrl) {
+        throw new BadRequestError('cancelUrl is required');
       }
 
       // Check if user has a shipping address
@@ -257,10 +262,54 @@ export class StripeController {
         return;
       }
 
-      const result = await settlementService.processBuyNow(userId, listingId, paymentMethodId);
+      const result = await settlementService.processBuyNow(userId, listingId, successUrl, cancelUrl);
 
       if (!result.success) {
         logger.warn('Buy Now failed', { userId, listingId, error: result.error });
+        res.status(400).json(result);
+        return;
+      }
+
+      res.status(200).json({
+        success: true,
+        data: result.data,
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * Complete auction payment - creates checkout session for auction winner
+   * Called after auction ends, winner redirects to complete payment
+   * POST /api/v1/stripe/complete-auction-payment
+   */
+  async completeAuctionPayment(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const { id: userId } = req.user;
+      const { settlementId, successUrl, cancelUrl } = req.body;
+
+      if (!settlementId) {
+        throw new BadRequestError('settlementId is required');
+      }
+
+      if (!successUrl) {
+        throw new BadRequestError('successUrl is required');
+      }
+
+      if (!cancelUrl) {
+        throw new BadRequestError('cancelUrl is required');
+      }
+
+      const result = await settlementService.createAuctionPaymentCheckout(
+        userId,
+        settlementId,
+        successUrl,
+        cancelUrl
+      );
+
+      if (!result.success) {
+        logger.warn('Complete auction payment failed', { userId, settlementId, error: result.error });
         res.status(400).json(result);
         return;
       }

@@ -2,6 +2,7 @@ import Stripe from 'stripe';
 import { getStripeClient, isStripeEnabled } from './client';
 import { getSupabaseClient } from '../supabase';
 import { logger } from '../../utils/logger';
+import { settlementService } from './settlement.service';
 
 export interface SetupIntentResult {
   clientSecret: string;
@@ -578,6 +579,33 @@ class StripeService {
             logger.error('Error updating payout status', { error, transferId: transfer.id });
           }
         }
+        break;
+      }
+
+      case 'checkout.session.completed': {
+        // Checkout session completed (payment successful)
+        const session = event.data.object as Stripe.Checkout.Session;
+        logger.info('Checkout session completed', {
+          sessionId: session.id,
+          paymentStatus: session.payment_status,
+          metadata: session.metadata,
+        });
+
+        if (session.payment_status === 'paid') {
+          await settlementService.handleCheckoutComplete(session.id);
+        }
+        break;
+      }
+
+      case 'checkout.session.expired': {
+        // Checkout session expired without payment
+        const session = event.data.object as Stripe.Checkout.Session;
+        logger.info('Checkout session expired', {
+          sessionId: session.id,
+          metadata: session.metadata,
+        });
+
+        await settlementService.handleCheckoutExpired(session.id);
         break;
       }
 

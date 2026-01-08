@@ -29,6 +29,11 @@ router.get('/bid-power', wrap(stripeController.getBidPower.bind(stripeController
 router.post('/bids', wrap(stripeController.placeBid.bind(stripeController)));
 
 // Buy Now (secure - uses authenticated user ID only)
+// Returns checkout URL for card or crypto payment
 router.post('/buy-now', wrap(stripeController.buyNow.bind(stripeController)));
+
+// Complete auction payment (for auction winners to pay after auction ends)
+// Returns checkout URL for card or crypto payment
+router.post('/complete-auction-payment', wrap(stripeController.completeAuctionPayment.bind(stripeController)));
 
 export default router;

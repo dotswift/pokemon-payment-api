@@ -25,8 +25,21 @@ export interface BuyNowResult {
     cardName: string;
     cardSet: string;
     amount: number;
-    paymentIntentId: string;
-    purchasedAt: string;
+    checkoutUrl: string;
+    sessionId: string;
+  };
+}
+
+export interface CheckoutSessionResult {
+  success: boolean;
+  error?: string;
+  data?: {
+    checkoutUrl: string;
+    sessionId: string;
+    settlementId: string;
+    cardName: string;
+    cardSet: string;
+    amount: number;
   };
 }
 
@@ -44,16 +57,12 @@ class SettlementService {
   /**
    * Run the auction settlement process
    * 1. End expired auctions
-   * 2. Charge winners for their winning bids
-   * 3. Create settlement and escrow records
+   * 2. Create pending_payment settlements for winners to complete payment
+   *
+   * Note: Winners will complete payment via checkout session (supports card + crypto)
    */
   async settleAuctions(): Promise<SettlementSummary> {
-    const stripe = getStripeClient();
     const supabase = getSupabaseClient();
-
-    if (!stripe) {
-      throw new Error('Stripe is not configured');
-    }
 
     if (!supabase) {
       throw new Error('Supabase is not configured');
@@ -79,45 +88,13 @@ class SettlementService {
       try {
         logger.info(`Processing auction ${auction.listing_id}`);
 
-        // Get Stripe customer ID for winner
-        const { data: stripeCustomer } = await supabase
-          .from('stripe_customers')
-          .select('stripe_customer_id')
-          .eq('user_id', auction.winner_id)
-          .single();
-
-        if (!stripeCustomer?.stripe_customer_id) {
-          logger.error(`No Stripe customer for winner ${auction.winner_id}`);
-          results.push({
-            listingId: auction.listing_id,
-            status: 'failed',
-            error: 'No Stripe customer found for winner',
-          });
-          continue;
-        }
-
-        // Create PaymentIntent to charge winner
         const amountCents = Math.round(auction.final_amount * 100);
 
         // Get winner's shipping address
         const shippingAddress = await profileService.getShippingAddress(auction.winner_id);
 
-        const paymentIntent = await stripe.paymentIntents.create({
-          amount: amountCents,
-          currency: 'usd',
-          customer: stripeCustomer.stripe_customer_id,
-          payment_method: auction.stripe_payment_method_id,
-          off_session: true,
-          confirm: true,
-          description: `Auction win: ${auction.card_name} (${auction.card_set})`,
-          metadata: {
-            listing_id: auction.listing_id,
-            winner_id: auction.winner_id,
-            seller_id: auction.seller_id,
-          },
-        });
-
-        // Create settlement record with shipping address
+        // Create settlement record with pending_payment status
+        // Winner will complete payment via checkout session
         const { data: settlement, error: settlementError } = await supabase
           .from('settlements')
           .insert({
@@ -125,8 +102,7 @@ class SettlementService {
             winner_id: auction.winner_id,
             seller_id: auction.seller_id,
             final_amount: amountCents,
-            stripe_payment_intent_id: paymentIntent.id,
-            status: paymentIntent.status === 'succeeded' ? 'charged' : 'pending',
+            status: 'pending_payment',
             shipping_address: shippingAddress,
           })
           .select('id')
@@ -134,22 +110,19 @@ class SettlementService {
 
         if (settlementError) {
           logger.error('Settlement insert error', { error: settlementError });
-        }
-
-        // Update listing status
-        if (paymentIntent.status === 'succeeded' && settlement?.id) {
-          await supabase
-            .from('listings')
-            .update({ status: 'sold' })
-            .eq('id', auction.listing_id);
-
-          // Create escrow record with actual settlement ID
-          await supabase.from('escrow').insert({
-            settlement_id: settlement.id,
-            amount: amountCents,
-            status: 'holding',
+          results.push({
+            listingId: auction.listing_id,
+            status: 'failed',
+            error: 'Failed to create settlement record',
           });
+          continue;
         }
+
+        // Update listing status to awaiting_payment
+        await supabase
+          .from('listings')
+          .update({ status: 'awaiting_payment' })
+          .eq('id', auction.listing_id);
 
         results.push({
           listingId: auction.listing_id,
@@ -157,20 +130,14 @@ class SettlementService {
           amount: amountCents,
         });
 
-        logger.info(`Successfully processed auction ${auction.listing_id}: ${paymentIntent.status}`);
+        logger.info(`Settlement created for auction ${auction.listing_id}, awaiting winner payment`, {
+          settlementId: settlement.id,
+          winnerId: auction.winner_id,
+        });
 
       } catch (err) {
         const error = err as Error;
         logger.error(`Error processing auction ${auction.listing_id}`, { error: error.message });
-
-        // Record failed settlement attempt
-        await supabase.from('settlements').insert({
-          listing_id: auction.listing_id,
-          winner_id: auction.winner_id,
-          seller_id: auction.seller_id,
-          final_amount: Math.round(auction.final_amount * 100),
-          status: 'failed',
-        });
 
         results.push({
           listingId: auction.listing_id,
@@ -188,12 +155,14 @@ class SettlementService {
   }
 
   /**
-   * Process Buy Now purchase - immediate purchase at buy_now_price
+   * Process Buy Now purchase - creates a Checkout Session for payment
+   * Supports both card and crypto (USDC) payments
    */
   async processBuyNow(
     buyerId: string,
     listingId: string,
-    paymentMethodId: string
+    successUrl: string,
+    cancelUrl: string
   ): Promise<BuyNowResult> {
     const stripe = getStripeClient();
     const supabase = getSupabaseClient();
@@ -210,7 +179,7 @@ class SettlementService {
     logger.info('Buy Now: fetching listing', { listingId, buyerId });
     const { data: listing, error: listingError } = await supabase
       .from('listings')
-      .select('id, user_id, buy_now_price, status, card:pokemon_cards(name, set_name)')
+      .select('id, user_id, buy_now_price, status, card:pokemon_cards(name, set_name, image_small)')
       .eq('id', listingId)
       .single();
 
@@ -240,40 +209,43 @@ class SettlementService {
     const amountCents = Math.round(listing.buy_now_price * 100);
     const cardName = (listing.card as { name?: string })?.name || 'Unknown Card';
     const cardSet = (listing.card as { set_name?: string })?.set_name || '';
+    const cardImage = (listing.card as { image_small?: string })?.image_small;
 
-    // 2. Get buyer's Stripe customer ID
-    const { data: stripeCustomer } = await supabase
+    // 2. Get or create Stripe customer for buyer
+    let stripeCustomerId: string;
+    const { data: existingCustomer } = await supabase
       .from('stripe_customers')
       .select('stripe_customer_id')
       .eq('user_id', buyerId)
       .single();
 
-    if (!stripeCustomer?.stripe_customer_id) {
-      return { success: false, error: 'No payment method on file' };
+    if (existingCustomer?.stripe_customer_id) {
+      stripeCustomerId = existingCustomer.stripe_customer_id;
+    } else {
+      // Get buyer email and create customer
+      const { data: profile } = await supabase
+        .from('profiles')
+        .select('email')
+        .eq('id', buyerId)
+        .single();
+
+      const customer = await stripe.customers.create({
+        email: profile?.email,
+        metadata: { supabase_user_id: buyerId },
+      });
+      stripeCustomerId = customer.id;
+
+      await supabase.from('stripe_customers').insert({
+        user_id: buyerId,
+        stripe_customer_id: customer.id,
+      });
     }
 
     try {
       // Get buyer's shipping address
       const shippingAddress = await profileService.getShippingAddress(buyerId);
 
-      // 3. Create PaymentIntent
-      const paymentIntent = await stripe.paymentIntents.create({
-        amount: amountCents,
-        currency: 'usd',
-        customer: stripeCustomer.stripe_customer_id,
-        payment_method: paymentMethodId,
-        off_session: true,
-        confirm: true,
-        description: `Buy Now: ${cardName} (${cardSet})`,
-        metadata: {
-          listing_id: listingId,
-          winner_id: buyerId,
-          seller_id: sellerId,
-          type: 'buy_now',
-        },
-      });
-
-      // 4. Create settlement record with shipping address
+      // 3. Create settlement record with pending_payment status
       const { data: settlement, error: settlementError } = await supabase
         .from('settlements')
         .insert({
@@ -281,62 +253,387 @@ class SettlementService {
           winner_id: buyerId,
           seller_id: sellerId,
           final_amount: amountCents,
-          stripe_payment_intent_id: paymentIntent.id,
-          status: paymentIntent.status === 'succeeded' ? 'charged' : 'pending',
+          status: 'pending_payment',
           shipping_address: shippingAddress,
         })
         .select('id')
         .single();
 
-      if (settlementError) {
+      if (settlementError || !settlement) {
         logger.error('Settlement insert error', { error: settlementError });
+        return { success: false, error: 'Failed to create settlement' };
       }
 
-      // 5. Update listing to sold
-      if (paymentIntent.status === 'succeeded') {
-        await supabase
-          .from('listings')
-          .update({ status: 'sold', ends_at: new Date().toISOString() })
-          .eq('id', listingId);
+      // 4. Create Checkout Session with card and crypto payment methods
+      const session = await stripe.checkout.sessions.create({
+        customer: stripeCustomerId,
+        payment_method_types: ['card', 'crypto'],
+        line_items: [
+          {
+            price_data: {
+              currency: 'usd',
+              product_data: {
+                name: cardName,
+                description: cardSet ? `Set: ${cardSet}` : undefined,
+                images: cardImage ? [cardImage] : undefined,
+              },
+              unit_amount: amountCents,
+            },
+            quantity: 1,
+          },
+        ],
+        mode: 'payment',
+        success_url: successUrl,
+        cancel_url: cancelUrl,
+        expires_at: Math.floor(Date.now() / 1000) + 30 * 60, // 30 minutes
+        // Show saved payment methods and allow saving new ones
+        saved_payment_method_options: {
+          allow_redisplay_filters: ['always', 'limited'],
+          payment_method_save: 'enabled',
+        },
+        metadata: {
+          settlement_id: settlement.id,
+          listing_id: listingId,
+          buyer_id: buyerId,
+          seller_id: sellerId,
+          type: 'buy_now',
+        },
+      });
 
-        // 6. Create escrow record
-        if (settlement?.id) {
-          await supabase.from('escrow').insert({
-            settlement_id: settlement.id,
-            amount: amountCents,
-            status: 'holding',
-          });
-        }
-      }
+      // 5. Update settlement with checkout session ID
+      await supabase
+        .from('settlements')
+        .update({ stripe_checkout_session_id: session.id })
+        .eq('id', settlement.id);
 
-      logger.info(`Buy Now successful for listing ${listingId}`, { paymentIntentId: paymentIntent.id });
+      logger.info(`Buy Now checkout session created for listing ${listingId}`, { sessionId: session.id });
 
       return {
         success: true,
         data: {
-          settlementId: settlement?.id || '',
+          settlementId: settlement.id,
           cardName,
           cardSet,
           amount: amountCents,
-          paymentIntentId: paymentIntent.id,
-          purchasedAt: new Date().toISOString(),
+          checkoutUrl: session.url!,
+          sessionId: session.id,
         },
       };
 
     } catch (err) {
       const error = err as Error;
       logger.error(`Buy Now failed for listing ${listingId}`, { error: error.message });
+      return { success: false, error: error.message };
+    }
+  }
 
-      // Record failed settlement
-      await supabase.from('settlements').insert({
-        listing_id: listingId,
-        winner_id: buyerId,
-        seller_id: sellerId,
-        final_amount: amountCents,
-        status: 'failed',
+  /**
+   * Create checkout session for completing auction payment
+   * Called by winner after auction ends
+   */
+  async createAuctionPaymentCheckout(
+    buyerId: string,
+    settlementId: string,
+    successUrl: string,
+    cancelUrl: string
+  ): Promise<CheckoutSessionResult> {
+    const stripe = getStripeClient();
+    const supabase = getSupabaseClient();
+
+    if (!stripe) {
+      throw new Error('Stripe is not configured');
+    }
+
+    if (!supabase) {
+      throw new Error('Supabase is not configured');
+    }
+
+    // 1. Get settlement and verify ownership and status
+    const { data: settlement, error: settlementError } = await supabase
+      .from('settlements')
+      .select(`
+        id,
+        winner_id,
+        seller_id,
+        listing_id,
+        final_amount,
+        status,
+        listing:listings(
+          id,
+          card:pokemon_cards(name, set_name, image_small)
+        )
+      `)
+      .eq('id', settlementId)
+      .single();
+
+    if (settlementError || !settlement) {
+      logger.warn('Settlement not found', { settlementId, error: settlementError });
+      return { success: false, error: 'Settlement not found' };
+    }
+
+    if (settlement.winner_id !== buyerId) {
+      logger.warn('User not winner of settlement', { settlementId, buyerId, winnerId: settlement.winner_id });
+      return { success: false, error: 'You are not the winner of this auction' };
+    }
+
+    if (settlement.status !== 'pending_payment') {
+      logger.warn('Settlement not pending payment', { settlementId, status: settlement.status });
+      return { success: false, error: `Payment already ${settlement.status}` };
+    }
+
+    // Handle nested Supabase join - listing is an object, card is nested
+    const listing = settlement.listing as unknown as { id: string; card: { name?: string; set_name?: string; image_small?: string } } | null;
+    const cardName = listing?.card?.name || 'Unknown Card';
+    const cardSet = listing?.card?.set_name || '';
+    const cardImage = listing?.card?.image_small;
+
+    // 2. Get or create Stripe customer for buyer
+    let stripeCustomerId: string;
+    const { data: existingCustomer } = await supabase
+      .from('stripe_customers')
+      .select('stripe_customer_id')
+      .eq('user_id', buyerId)
+      .single();
+
+    if (existingCustomer?.stripe_customer_id) {
+      stripeCustomerId = existingCustomer.stripe_customer_id;
+    } else {
+      const { data: profile } = await supabase
+        .from('profiles')
+        .select('email')
+        .eq('id', buyerId)
+        .single();
+
+      const customer = await stripe.customers.create({
+        email: profile?.email,
+        metadata: { supabase_user_id: buyerId },
+      });
+      stripeCustomerId = customer.id;
+
+      await supabase.from('stripe_customers').insert({
+        user_id: buyerId,
+        stripe_customer_id: customer.id,
+      });
+    }
+
+    try {
+      // 3. Create Checkout Session with card and crypto payment methods
+      const session = await stripe.checkout.sessions.create({
+        customer: stripeCustomerId,
+        payment_method_types: ['card', 'crypto'],
+        line_items: [
+          {
+            price_data: {
+              currency: 'usd',
+              product_data: {
+                name: cardName,
+                description: cardSet ? `Set: ${cardSet}` : undefined,
+                images: cardImage ? [cardImage] : undefined,
+              },
+              unit_amount: settlement.final_amount,
+            },
+            quantity: 1,
+          },
+        ],
+        mode: 'payment',
+        success_url: successUrl,
+        cancel_url: cancelUrl,
+        expires_at: Math.floor(Date.now() / 1000) + 24 * 60 * 60, // 24 hours for auction payments
+        // Show saved payment methods and allow saving new ones
+        saved_payment_method_options: {
+          allow_redisplay_filters: ['always', 'limited'],
+          payment_method_save: 'enabled',
+        },
+        metadata: {
+          settlement_id: settlementId,
+          listing_id: settlement.listing_id,
+          buyer_id: buyerId,
+          seller_id: settlement.seller_id,
+          type: 'auction',
+        },
       });
 
+      // 4. Update settlement with checkout session ID
+      await supabase
+        .from('settlements')
+        .update({ stripe_checkout_session_id: session.id })
+        .eq('id', settlementId);
+
+      logger.info(`Auction payment checkout session created`, { settlementId, sessionId: session.id });
+
+      return {
+        success: true,
+        data: {
+          checkoutUrl: session.url!,
+          sessionId: session.id,
+          settlementId,
+          cardName,
+          cardSet,
+          amount: settlement.final_amount,
+        },
+      };
+
+    } catch (err) {
+      const error = err as Error;
+      logger.error(`Auction payment checkout failed`, { settlementId, error: error.message });
       return { success: false, error: error.message };
+    }
+  }
+
+  /**
+   * Handle successful checkout session completion
+   * Called from webhook handler
+   */
+  async handleCheckoutComplete(sessionId: string): Promise<void> {
+    const stripe = getStripeClient();
+    const supabase = getSupabaseClient();
+
+    if (!stripe || !supabase) {
+      throw new Error('Services not configured');
+    }
+
+    // Get the full session with payment intent
+    const session = await stripe.checkout.sessions.retrieve(sessionId, {
+      expand: ['payment_intent'],
+    });
+
+    const settlementId = session.metadata?.settlement_id;
+    const listingId = session.metadata?.listing_id;
+    const type = session.metadata?.type; // 'buy_now' or 'auction'
+
+    if (!settlementId) {
+      logger.error('No settlement_id in checkout session metadata', { sessionId });
+      return;
+    }
+
+    const paymentIntent = session.payment_intent as Stripe.PaymentIntent;
+
+    // For buy-now, check if listing was already sold by another user
+    if (type === 'buy_now' && listingId) {
+      const { data: listing } = await supabase
+        .from('listings')
+        .select('status')
+        .eq('id', listingId)
+        .single();
+
+      if (listing?.status === 'sold') {
+        // Another user already bought this item - mark settlement as failed
+        // Stripe will need to refund the payment
+        await supabase
+          .from('settlements')
+          .update({ status: 'failed' })
+          .eq('id', settlementId);
+
+        logger.warn('Checkout completed but listing already sold, needs refund', {
+          sessionId,
+          settlementId,
+          listingId,
+          paymentIntentId: paymentIntent?.id,
+        });
+
+        // TODO: Trigger automatic refund via Stripe
+        // await stripe.refunds.create({ payment_intent: paymentIntent?.id });
+        return;
+      }
+    }
+
+    // Update settlement to charged
+    const { error: updateError } = await supabase
+      .from('settlements')
+      .update({
+        status: 'charged',
+        charged_at: new Date().toISOString(),
+        stripe_payment_intent_id: paymentIntent?.id,
+      })
+      .eq('id', settlementId);
+
+    if (updateError) {
+      logger.error('Failed to update settlement status', { settlementId, error: updateError });
+      return;
+    }
+
+    // Update listing to sold
+    if (listingId) {
+      await supabase
+        .from('listings')
+        .update({ status: 'sold', ends_at: new Date().toISOString() })
+        .eq('id', listingId);
+    }
+
+    // Get settlement amount and create escrow
+    const { data: settlement } = await supabase
+      .from('settlements')
+      .select('final_amount')
+      .eq('id', settlementId)
+      .single();
+
+    if (settlement) {
+      await supabase.from('escrow').insert({
+        settlement_id: settlementId,
+        amount: settlement.final_amount,
+        status: 'holding',
+      });
+    }
+
+    logger.info('Checkout completed successfully', { sessionId, settlementId });
+  }
+
+  /**
+   * Handle expired checkout session
+   * Called from webhook handler
+   */
+  async handleCheckoutExpired(sessionId: string): Promise<void> {
+    const supabase = getSupabaseClient();
+
+    if (!supabase) {
+      throw new Error('Supabase not configured');
+    }
+
+    // Find settlement by checkout session ID
+    const { data: settlement } = await supabase
+      .from('settlements')
+      .select('id, status, listing_id')
+      .eq('stripe_checkout_session_id', sessionId)
+      .single();
+
+    if (!settlement) {
+      logger.warn('No settlement found for expired session', { sessionId });
+      return;
+    }
+
+    // Only update if still pending payment
+    if (settlement.status === 'pending_payment') {
+      await supabase
+        .from('settlements')
+        .update({ status: 'expired' })
+        .eq('id', settlement.id);
+
+      // For buy-now, re-activate the listing so others can purchase
+      // Check if listing is still available (not sold by another user)
+      const { data: listing } = await supabase
+        .from('listings')
+        .select('status')
+        .eq('id', settlement.listing_id)
+        .single();
+
+      if (listing && listing.status !== 'sold') {
+        await supabase
+          .from('listings')
+          .update({ status: 'active' })
+          .eq('id', settlement.listing_id);
+
+        logger.info('Checkout expired, listing re-activated', {
+          sessionId,
+          settlementId: settlement.id,
+          listingId: settlement.listing_id
+        });
+      } else {
+        logger.info('Checkout expired, listing already sold', {
+          sessionId,
+          settlementId: settlement.id,
+          listingId: settlement.listing_id
+        });
+      }
     }
   }
 }
