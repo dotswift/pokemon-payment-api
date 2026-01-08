@@ -499,6 +499,7 @@ class SettlementService {
 
     const settlementId = session.metadata?.settlement_id;
     const listingId = session.metadata?.listing_id;
+    const type = session.metadata?.type; // 'buy_now' or 'auction'
 
     if (!settlementId) {
       logger.error('No settlement_id in checkout session metadata', { sessionId });
@@ -506,6 +507,35 @@ class SettlementService {
     }
 
     const paymentIntent = session.payment_intent as Stripe.PaymentIntent;
+
+    // For buy-now, check if listing was already sold by another user
+    if (type === 'buy_now' && listingId) {
+      const { data: listing } = await supabase
+        .from('listings')
+        .select('status')
+        .eq('id', listingId)
+        .single();
+
+      if (listing?.status === 'sold') {
+        // Another user already bought this item - mark settlement as failed
+        // Stripe will need to refund the payment
+        await supabase
+          .from('settlements')
+          .update({ status: 'failed' })
+          .eq('id', settlementId);
+
+        logger.warn('Checkout completed but listing already sold, needs refund', {
+          sessionId,
+          settlementId,
+          listingId,
+          paymentIntentId: paymentIntent?.id,
+        });
+
+        // TODO: Trigger automatic refund via Stripe
+        // await stripe.refunds.create({ payment_intent: paymentIntent?.id });
+        return;
+      }
+    }
 
     // Update settlement to charged
     const { error: updateError } = await supabase
@@ -578,9 +608,32 @@ class SettlementService {
         .update({ status: 'expired' })
         .eq('id', settlement.id);
 
-      // For buy-now, re-activate the listing
-      // For auctions, may need different handling (re-list, second chance, etc.)
-      logger.info('Checkout session expired', { sessionId, settlementId: settlement.id });
+      // For buy-now, re-activate the listing so others can purchase
+      // Check if listing is still available (not sold by another user)
+      const { data: listing } = await supabase
+        .from('listings')
+        .select('status')
+        .eq('id', settlement.listing_id)
+        .single();
+
+      if (listing && listing.status !== 'sold') {
+        await supabase
+          .from('listings')
+          .update({ status: 'active' })
+          .eq('id', settlement.listing_id);
+
+        logger.info('Checkout expired, listing re-activated', {
+          sessionId,
+          settlementId: settlement.id,
+          listingId: settlement.listing_id
+        });
+      } else {
+        logger.info('Checkout expired, listing already sold', {
+          sessionId,
+          settlementId: settlement.id,
+          listingId: settlement.listing_id
+        });
+      }
     }
   }
 }
