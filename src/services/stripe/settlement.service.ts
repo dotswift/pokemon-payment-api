@@ -245,23 +245,41 @@ class SettlementService {
       // Get buyer's shipping address
       const shippingAddress = await profileService.getShippingAddress(buyerId);
 
-      // 3. Create settlement record with pending_payment status
-      const { data: settlement, error: settlementError } = await supabase
+      // 3. Check for existing pending_payment settlement (user may have canceled checkout)
+      const { data: existingSettlement } = await supabase
         .from('settlements')
-        .insert({
-          listing_id: listingId,
-          winner_id: buyerId,
-          seller_id: sellerId,
-          final_amount: amountCents,
-          status: 'pending_payment',
-          shipping_address: shippingAddress,
-        })
         .select('id')
+        .eq('listing_id', listingId)
+        .eq('winner_id', buyerId)
+        .eq('status', 'pending_payment')
         .single();
 
-      if (settlementError || !settlement) {
-        logger.error('Settlement insert error', { error: settlementError });
-        return { success: false, error: 'Failed to create settlement' };
+      let settlementId: string;
+
+      if (existingSettlement) {
+        // Reuse existing pending settlement
+        settlementId = existingSettlement.id;
+        logger.info('Reusing existing pending settlement', { settlementId, listingId });
+      } else {
+        // Create new settlement record with pending_payment status
+        const { data: settlement, error: settlementError } = await supabase
+          .from('settlements')
+          .insert({
+            listing_id: listingId,
+            winner_id: buyerId,
+            seller_id: sellerId,
+            final_amount: amountCents,
+            status: 'pending_payment',
+            shipping_address: shippingAddress,
+          })
+          .select('id')
+          .single();
+
+        if (settlementError || !settlement) {
+          logger.error('Settlement insert error', { error: settlementError });
+          return { success: false, error: 'Failed to create settlement' };
+        }
+        settlementId = settlement.id;
       }
 
       // 4. Create Checkout Session with card and crypto payment methods
@@ -292,7 +310,7 @@ class SettlementService {
           payment_method_save: 'enabled',
         },
         metadata: {
-          settlement_id: settlement.id,
+          settlement_id: settlementId,
           listing_id: listingId,
           buyer_id: buyerId,
           seller_id: sellerId,
@@ -304,14 +322,14 @@ class SettlementService {
       await supabase
         .from('settlements')
         .update({ stripe_checkout_session_id: session.id })
-        .eq('id', settlement.id);
+        .eq('id', settlementId);
 
       logger.info(`Buy Now checkout session created for listing ${listingId}`, { sessionId: session.id });
 
       return {
         success: true,
         data: {
-          settlementId: settlement.id,
+          settlementId,
           cardName,
           cardSet,
           amount: amountCents,
