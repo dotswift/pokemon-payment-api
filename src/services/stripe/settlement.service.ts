@@ -245,21 +245,52 @@ class SettlementService {
       // Get buyer's shipping address
       const shippingAddress = await profileService.getShippingAddress(buyerId);
 
-      // 3. Check for existing pending_payment settlement (user may have canceled checkout)
+      // 3. Check for ANY existing settlement for this listing
       const { data: existingSettlement } = await supabase
         .from('settlements')
-        .select('id')
+        .select('id, winner_id, status')
         .eq('listing_id', listingId)
-        .eq('winner_id', buyerId)
-        .eq('status', 'pending_payment')
         .single();
 
       let settlementId: string;
 
       if (existingSettlement) {
-        // Reuse existing pending settlement
-        settlementId = existingSettlement.id;
-        logger.info('Reusing existing pending settlement', { settlementId, listingId });
+        // If already charged/completed, item is sold
+        if (existingSettlement.status === 'charged' || existingSettlement.status === 'completed') {
+          return { success: false, error: 'This item has already been sold' };
+        }
+
+        // If pending_payment from same buyer, reuse it
+        if (existingSettlement.winner_id === buyerId && existingSettlement.status === 'pending_payment') {
+          settlementId = existingSettlement.id;
+          logger.info('Reusing existing pending settlement', { settlementId, listingId });
+        } else {
+          // Abandoned checkout (pending/expired/failed from any buyer) - delete and create fresh
+          await supabase
+            .from('settlements')
+            .delete()
+            .eq('id', existingSettlement.id);
+          logger.info('Deleted abandoned settlement', { oldSettlementId: existingSettlement.id, oldStatus: existingSettlement.status, listingId });
+
+          const { data: settlement, error: settlementError } = await supabase
+            .from('settlements')
+            .insert({
+              listing_id: listingId,
+              winner_id: buyerId,
+              seller_id: sellerId,
+              final_amount: amountCents,
+              status: 'pending_payment',
+              shipping_address: shippingAddress,
+            })
+            .select('id')
+            .single();
+
+          if (settlementError || !settlement) {
+            logger.error('Settlement insert error', { error: settlementError });
+            return { success: false, error: 'Failed to create settlement' };
+          }
+          settlementId = settlement.id;
+        }
       } else {
         // Create new settlement record with pending_payment status
         const { data: settlement, error: settlementError } = await supabase
